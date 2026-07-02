@@ -65,7 +65,7 @@ export async function extractTenantDetails(
       : "";
 
   const response = await getClient().messages.create({
-    model: "claude-opus-4-8",
+    model: "claude-sonnet-5",
     max_tokens: 1024,
     tools: [EXTRACTION_TOOL],
     tool_choice: { type: "tool", name: "record_tenant_details" },
