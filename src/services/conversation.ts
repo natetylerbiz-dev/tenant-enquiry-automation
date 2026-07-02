@@ -9,7 +9,7 @@ import { extractTenantDetails } from "./extraction.js";
 import { createViewingEvent } from "./calendar.js";
 import { CONFIDENCE_THRESHOLD } from "../config.js";
 import type { TenantEnquiryEmail } from "./gmail.js";
-import { normalizePhoneNumber } from "./phone.js";
+import { normalizePhoneNumber, isValidPhoneNumber } from "./phone.js";
 
 dotenv.config({ quiet: true });
 
@@ -75,6 +75,14 @@ export async function handleNewEnquiry(email: TenantEnquiryEmail): Promise<void>
     await escalate(email.from, "missing-phone-in-extraction", { subject: email.subject, extracted });
     return;
   }
+  // Catches a phone number that's present but too short/long/garbled to be a
+  // real number at all (e.g. a partial OCR'd or truncated number in the email
+  // body) — normalizePhoneNumber only reformats, it doesn't validate. Skipped
+  // for the test override since that's a known-good pinned testing number.
+  if (!process.env.TEST_TENANT_PHONE_OVERRIDE && !isValidPhoneNumber(phone)) {
+    await escalate(email.from, "invalid-phone-in-extraction", { subject: email.subject, extracted, normalizedPhone: phone });
+    return;
+  }
 
   const tenant = upsertTenant({
     phone,
@@ -123,36 +131,51 @@ async function sendSlotOptions(tenant: TenantRecord): Promise<void> {
 
   const slots = await slotsPromise;
 
-  if (slots.length === 0) {
-    await sendWhatsAppMessage({
-      to: tenant.phone,
-      body: `Sorry, there are no viewing slots available for ${tenant.property || "this property"} right now. I'll let ${agentName()} know you're interested.`,
+  // A syntactically valid number can still fail here — not registered on
+  // WhatsApp, opted out, or otherwise rejected by Twilio — which is only
+  // knowable by actually attempting the send. Caught around every send in
+  // this function (including the no-slots message) so any of them failing
+  // notifies the agent instead of the tenant silently never hearing back.
+  try {
+    if (slots.length === 0) {
+      await sendWhatsAppMessage({
+        to: tenant.phone,
+        body: `Sorry, there are no viewing slots available for ${tenant.property || "this property"} right now. I'll let ${agentName()} know you're interested.`,
+      });
+      await escalate(tenant.phone, "no-slots-available", { property: tenant.property });
+      return;
+    }
+
+    const templateSid = process.env.TWILIO_SLOTS_TEMPLATE_SID;
+    if (templateSid) {
+      const slotsList = slots.map((slot, i) => `${i + 1}. ${formatSlotForTemplate(slot)}`).join("\n");
+      const propertyDescription = await propertyDescriptionPromise;
+      await sendWhatsAppMessage({
+        to: tenant.phone,
+        contentSid: templateSid,
+        contentVariables: {
+          "1": tenant.name || "there",
+          "2": propertyDescription,
+          "3": agentName(),
+          "4": slotsList,
+        },
+      });
+    } else {
+      const list = slots.map((slot, i) => `${i + 1}. ${slot.date} ${slot.time}`).join("\n");
+      const body =
+        `Hi ${tenant.name || "there"}, here are the available viewing times for ${tenant.property || "the property"}:\n\n` +
+        `${list}\n\nReply with the number of the time that works for you.\n\n- ${agentName()}`;
+      await sendWhatsAppMessage({ to: tenant.phone, body });
+    }
+  } catch (err) {
+    console.error("sendSlotOptions: failed to message tenant on WhatsApp (invalid number or not on WhatsApp):", err);
+    await escalate(tenant.phone, "tenant-unreachable-on-whatsapp", {
+      property: tenant.property,
+      error: err instanceof Error ? err.message : String(err),
     });
-    await escalate(tenant.phone, "no-slots-available", { property: tenant.property });
     return;
   }
 
-  const templateSid = process.env.TWILIO_SLOTS_TEMPLATE_SID;
-  if (templateSid) {
-    const slotsList = slots.map((slot, i) => `${i + 1}. ${formatSlotForTemplate(slot)}`).join("\n");
-    const propertyDescription = await propertyDescriptionPromise;
-    await sendWhatsAppMessage({
-      to: tenant.phone,
-      contentSid: templateSid,
-      contentVariables: {
-        "1": tenant.name || "there",
-        "2": propertyDescription,
-        "3": agentName(),
-        "4": slotsList,
-      },
-    });
-  } else {
-    const list = slots.map((slot, i) => `${i + 1}. ${slot.date} ${slot.time}`).join("\n");
-    const body =
-      `Hi ${tenant.name || "there"}, here are the available viewing times for ${tenant.property || "the property"}:\n\n` +
-      `${list}\n\nReply with the number of the time that works for you.\n\n- ${agentName()}`;
-    await sendWhatsAppMessage({ to: tenant.phone, body });
-  }
   upsertTenant({
     phone: tenant.phone,
     name: tenant.name,
