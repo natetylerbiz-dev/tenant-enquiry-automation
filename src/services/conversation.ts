@@ -332,6 +332,22 @@ async function handleFaqQuestion(tenant: TenantRecord, body: string): Promise<vo
   }
 
   if (confidence < CONFIDENCE_THRESHOLD) {
+    // Test-mode override, same pattern as TEST_SKIP_AGENT_BOOKING_NOTIFICATION:
+    // when testing solo with one number playing both tenant and agent,
+    // escalating here would just be another message to the same phone the
+    // tester is using as the tenant. Redirects the tenant to contact the
+    // agent themselves instead of paging the agent — still logged, just not
+    // escalated via WhatsApp.
+    if (process.env.TEST_REDIRECT_ESCALATION_TO_TENANT === "true") {
+      const agentContact = process.env.AGENT_WHATSAPP_NUMBER ? ` on ${process.env.AGENT_WHATSAPP_NUMBER}` : "";
+      await sendWhatsAppMessage({
+        to: tenant.phone,
+        body: `That's something I can't help with directly — please contact ${agentName()}${agentContact} to sort this out.`,
+      });
+      logEvent(tenant.phone, "faq_escalation_redirected_to_tenant", { question: body, answer, confidence });
+      return;
+    }
+
     await escalate(tenant.phone, "low-confidence-faq-answer", { question: body, answer, confidence });
     return;
   }
