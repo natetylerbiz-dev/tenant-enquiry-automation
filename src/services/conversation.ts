@@ -35,14 +35,21 @@ function agentName(): string {
   return process.env.AGENT_NAME || "the leasing team";
 }
 
+// Includes the day-of-month and month, not just the weekday name — two
+// slots on the same weekday in different weeks (e.g. Saturdays two weeks
+// apart) would otherwise be indistinguishable in the offer message, and
+// "Saturday" alone can't disambiguate which one a tenant means either (see
+// findSlotsMentioned, which relies on this same distinguishability).
 function formatSlotForTemplate(slot: SlotRow): string {
   const dt = new Date(`${slot.date} ${slot.time}`);
   const weekday = dt.toLocaleDateString("en-US", { weekday: "long" });
+  const day = dt.getDate();
+  const month = dt.toLocaleDateString("en-US", { month: "long" });
   const hour12 = dt.getHours() % 12 || 12;
   const minutes = dt.getMinutes();
   const ampm = dt.getHours() < 12 ? "am" : "pm";
   const time = minutes === 0 ? `${hour12}${ampm}` : `${hour12}:${String(minutes).padStart(2, "0")}${ampm}`;
-  return `${weekday} at ${time}`;
+  return `${weekday}, ${day} ${month} at ${time}`;
 }
 
 async function formatPropertyDescription(property: string): Promise<string> {
@@ -161,7 +168,7 @@ async function sendSlotOptions(tenant: TenantRecord): Promise<void> {
         },
       });
     } else {
-      const list = slots.map((slot, i) => `${i + 1}. ${slot.date} ${slot.time}`).join("\n");
+      const list = slots.map((slot, i) => `${i + 1}. ${formatSlotForTemplate(slot)}`).join("\n");
       const body =
         `Hi ${tenant.name || "there"}, here are the available viewing times for ${tenant.property || "the property"}:\n\n` +
         `${list}\n\nReply with the number of the time that works for you.\n\n- ${agentName()}`;
@@ -252,7 +259,7 @@ async function bookViewing(tenant: TenantRecord, slot: SlotRow): Promise<void> {
   try {
     await sendWhatsAppMessage({
       to: tenant.phone,
-      body: `You're booked! ${slot.property} on ${slot.date} at ${slot.time}. See you then.`,
+      body: `You're booked! ${slot.property} on ${formatSlotForTemplate(slot)}. See you then.`,
     });
   } catch (err) {
     tenantNotified = false;
@@ -281,7 +288,7 @@ async function bookViewing(tenant: TenantRecord, slot: SlotRow): Promise<void> {
           `Property: ${slot.property}\n` +
           `Tenant: ${tenant.name}\n` +
           `Phone: ${tenant.phone}\n` +
-          `Time: ${slot.date} at ${slot.time}` +
+          `Time: ${formatSlotForTemplate(slot)}` +
           warnings,
       });
     } catch (err) {
