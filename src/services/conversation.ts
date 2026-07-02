@@ -15,6 +15,22 @@ dotenv.config({ quiet: true });
 
 const VIEWING_INTENT_RE = /\b(view|viewing|tour|visit|see (it|the (property|place|apartment|unit))|book)\b/i;
 
+const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+
+function slotWeekday(slot: SlotRow): string {
+  return new Date(`${slot.date} ${slot.time}`).toLocaleDateString("en-US", { weekday: "long" }).toLowerCase();
+}
+
+// Lets a tenant reply with the day of an already-offered slot ("Saturday
+// works") instead of the slot's list number — falls back to handleFaqQuestion
+// if nothing offered matches, so it can't misfire on an unrelated message.
+function findSlotsMentioned(body: string, slots: SlotRow[]): SlotRow[] {
+  const lower = body.toLowerCase();
+  const mentionedWeekdays = WEEKDAYS.filter((day) => new RegExp(`\\b${day}\\b`).test(lower));
+  if (mentionedWeekdays.length === 0) return [];
+  return slots.filter((slot) => mentionedWeekdays.includes(slotWeekday(slot)));
+}
+
 function agentName(): string {
   return process.env.AGENT_NAME || "the leasing team";
 }
@@ -155,9 +171,25 @@ async function handleSlotSelection(tenant: TenantRecord, body: string): Promise<
   const isWholeNumber = trimmed !== "" && Number.isInteger(choice);
 
   if (!isWholeNumber) {
-    // Not a slot pick at all (e.g. a question) — answer it instead of losing the
-    // slot offer. State/offeredSlots are untouched, so they can still reply with
-    // a number afterward.
+    const dayMatches = findSlotsMentioned(trimmed, slots);
+    if (dayMatches.length === 1) {
+      await bookViewing(tenant, dayMatches[0]);
+      return;
+    }
+    if (dayMatches.length > 1) {
+      const list = dayMatches
+        .map((slot) => `${slots.indexOf(slot) + 1}. ${formatSlotForTemplate(slot)}`)
+        .join("\n");
+      await sendWhatsAppMessage({
+        to: tenant.phone,
+        body: `I have a few options that day:\n\n${list}\n\nReply with the number of the one you'd like.`,
+      });
+      return;
+    }
+
+    // Not a slot pick or a recognized offered day — answer it instead of losing
+    // the slot offer. State/offeredSlots are untouched, so they can still reply
+    // with a number afterward.
     await handleFaqQuestion(tenant, body);
     return;
   }
