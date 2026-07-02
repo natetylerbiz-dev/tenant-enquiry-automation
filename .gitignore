@@ -4,3 +4,4 @@ dist/
 .claude/settings.local.json
 credentials-service-account.json
 data/
+lease-agreements/
