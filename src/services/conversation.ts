@@ -260,7 +260,16 @@ async function bookViewing(tenant: TenantRecord, slot: SlotRow): Promise<void> {
   }
 
   const agentNumber = process.env.AGENT_WHATSAPP_NUMBER;
-  if (agentNumber) {
+  // Test-mode override, same pattern as TEST_TENANT_PHONE_OVERRIDE: when testing
+  // solo with one WhatsApp number playing both tenant and agent, this booking
+  // notification would otherwise land in the same thread the tester is using
+  // as the tenant, indistinguishable from an actual tenant-facing message.
+  // Calendar/Sheet updates and the tenant's own "You're booked!" message are
+  // unaffected — only this agent-facing notification is skipped.
+  const skipAgentNotification = process.env.TEST_SKIP_AGENT_BOOKING_NOTIFICATION === "true";
+  if (agentNumber && skipAgentNotification) {
+    console.log("bookViewing: TEST_SKIP_AGENT_BOOKING_NOTIFICATION set — not sending agent booking notification");
+  } else if (agentNumber) {
     const warnings =
       (tenantNotified ? "" : "\n⚠ Tenant was NOT notified (WhatsApp send failed) — contact them directly.") +
       (slotMarked ? "" : "\n⚠ Could not mark the slot as booked in the Sheet — check for a possible double-booking.");
