@@ -1,5 +1,6 @@
 import dotenv from "dotenv";
 import { listUnreadEnquiries, markAsRead, type TenantEnquiryEmail } from "./gmail.js";
+import { withTimeout } from "./timeout.js";
 
 dotenv.config({ quiet: true });
 
@@ -19,7 +20,7 @@ export function startGmailPolling(onEnquiry: EnquiryHandler): NodeJS.Timeout {
 
     for (const email of enquiries) {
       try {
-        await onEnquiry(email);
+        await withTimeout(onEnquiry(email), 60_000, `onEnquiry(${email.id})`);
         await markAsRead(email.id);
       } catch (err) {
         console.error(`gmailPoller: failed to process message ${email.id}:`, err);

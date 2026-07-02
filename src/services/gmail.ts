@@ -3,7 +3,12 @@ import { google } from "googleapis";
 
 dotenv.config({ quiet: true });
 
-const GMAIL_QUERY = 'is:unread (subject:"Listing Enquiry" OR subject:"Contact Request")';
+function buildGmailQuery(): string {
+  const parts = ['is:unread', '(subject:"Listing Enquiry" OR subject:"Contact Request")'];
+  if (process.env.GMAIL_ENQUIRY_FROM) parts.push(`from:${process.env.GMAIL_ENQUIRY_FROM}`);
+  if (process.env.GMAIL_ENQUIRY_TO) parts.push(`to:${process.env.GMAIL_ENQUIRY_TO}`);
+  return parts.join(' ');
+}
 
 export interface TenantEnquiryEmail {
   id: string;
@@ -59,7 +64,7 @@ export async function listUnreadEnquiries(): Promise<TenantEnquiryEmail[]> {
 
   const listRes = await gmail.users.messages.list({
     userId: "me",
-    q: GMAIL_QUERY,
+    q: buildGmailQuery(),
   });
 
   const messages = listRes.data.messages ?? [];

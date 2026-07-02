@@ -16,7 +16,10 @@ let client: Anthropic | undefined;
 
 function getClient(): Anthropic {
   if (client) return client;
-  client = new Anthropic();
+  // Default SDK timeout is 10 minutes — far too long for a WhatsApp-response flow.
+  // A hung request with no timeout blocks the poller silently, with no error and
+  // no reply ever sent, so bound it tightly instead.
+  client = new Anthropic({ timeout: 30_000 });
   return client;
 }
 
@@ -31,7 +34,14 @@ const EXTRACTION_TOOL: Anthropic.Tool = {
       name: { type: "string", description: "Tenant's full name, or empty string if not stated" },
       phone: { type: "string", description: "Tenant's phone number, or empty string if not stated" },
       email: { type: "string", description: "Tenant's email address, or empty string if not stated" },
-      property: { type: "string", description: "The property/listing the tenant is enquiring about, or empty string if unclear" },
+      property: {
+        type: "string",
+        description:
+          "The property being enquired about, matched EXACTLY (character for character) to one of the known property names provided. " +
+          "Source emails (e.g. property portals) often describe the listing in their own marketing wording with extra details like " +
+          "web references - do not use that wording. If you cannot confidently match the enquiry to one of the known property names, " +
+          "leave this as an empty string rather than guessing or inventing a name.",
+      },
       message: { type: "string", description: "A short summary of what the tenant is asking for" },
       confidence: {
         type: "number",
@@ -46,8 +56,14 @@ const EXTRACTION_TOOL: Anthropic.Tool = {
 export async function extractTenantDetails(
   subject: string,
   body: string,
-  from: string
+  from: string,
+  knownProperties: string[] = []
 ): Promise<ExtractedTenantDetails> {
+  const propertyList =
+    knownProperties.length > 0
+      ? `Known property names (the "property" field must exactly match one of these, or be left empty):\n${knownProperties.map((p) => `- ${p}`).join("\n")}\n\n`
+      : "";
+
   const response = await getClient().messages.create({
     model: "claude-opus-4-8",
     max_tokens: 1024,
@@ -56,7 +72,7 @@ export async function extractTenantDetails(
     messages: [
       {
         role: "user",
-        content: `Extract tenant enquiry details from this email.\n\nFrom: ${from}\nSubject: ${subject}\n\n${body}`,
+        content: `Extract tenant enquiry details from this email.\n\n${propertyList}From: ${from}\nSubject: ${subject}\n\n${body}`,
       },
     ],
   });

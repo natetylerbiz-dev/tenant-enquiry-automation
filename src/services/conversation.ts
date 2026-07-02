@@ -3,12 +3,13 @@ import { getTenant, upsertTenant, type TenantRecord } from "../state/db.js";
 import { logEvent } from "./logger.js";
 import { escalate } from "./escalation.js";
 import { sendWhatsAppMessage } from "./whatsapp.js";
-import { getAvailableSlots, type SlotRow } from "./sheets.js";
+import { getAvailableSlots, getPropertyDetails, listKnownProperties, markSlotBooked, type SlotRow } from "./sheets.js";
 import { answerFaqQuestion } from "./faq.js";
 import { extractTenantDetails } from "./extraction.js";
 import { createViewingEvent } from "./calendar.js";
 import { CONFIDENCE_THRESHOLD } from "../config.js";
 import type { TenantEnquiryEmail } from "./gmail.js";
+import { normalizePhoneNumber } from "./phone.js";
 
 dotenv.config({ quiet: true });
 
@@ -18,20 +19,49 @@ function agentName(): string {
   return process.env.AGENT_NAME || "the leasing team";
 }
 
+function formatSlotForTemplate(slot: SlotRow): string {
+  const dt = new Date(`${slot.date} ${slot.time}`);
+  const weekday = dt.toLocaleDateString("en-US", { weekday: "long" });
+  const hour12 = dt.getHours() % 12 || 12;
+  const minutes = dt.getMinutes();
+  const ampm = dt.getHours() < 12 ? "am" : "pm";
+  const time = minutes === 0 ? `${hour12}${ampm}` : `${hour12}:${String(minutes).padStart(2, "0")}${ampm}`;
+  return `${weekday} at ${time}`;
+}
+
+async function formatPropertyDescription(property: string): Promise<string> {
+  const details = await getPropertyDetails(property);
+  if (!details?.bedrooms) return property;
+  const area = details.area ? ` in ${details.area}` : "";
+  return `the ${details.bedrooms} bedroom apartment${area}`;
+}
+
 export async function handleNewEnquiry(email: TenantEnquiryEmail): Promise<void> {
-  const extracted = await extractTenantDetails(email.subject, email.body, email.from);
+  const knownProperties = await listKnownProperties();
+  const extracted = await extractTenantDetails(email.subject, email.body, email.from, knownProperties);
 
   if (extracted.confidence < CONFIDENCE_THRESHOLD) {
     await escalate(email.from, "low-confidence-extraction", { subject: email.subject, extracted });
     return;
   }
-  if (!extracted.phone) {
+  if (!extracted.property) {
+    await escalate(email.from, "unmatched-property-in-extraction", { subject: email.subject, extracted, knownProperties });
+    return;
+  }
+
+  // Test-mode override: send everything to a known WhatsApp number instead of
+  // whatever phone the LLM extracted from the email body. Also used as the
+  // tenant's DB key so inbound replies from that number route back correctly.
+  // Real extracted numbers need E.164 normalization — Twilio WhatsApp rejects
+  // local-format numbers like "081 234 5678" as extracted verbatim from emails.
+  const phone = process.env.TEST_TENANT_PHONE_OVERRIDE || normalizePhoneNumber(extracted.phone);
+  if (!phone) {
     await escalate(email.from, "missing-phone-in-extraction", { subject: email.subject, extracted });
     return;
   }
 
   const tenant = upsertTenant({
-    phone: extracted.phone,
+    phone,
     name: extracted.name,
     email: extracted.email,
     property: extracted.property,
@@ -41,13 +71,10 @@ export async function handleNewEnquiry(email: TenantEnquiryEmail): Promise<void>
 
   logEvent(tenant.phone, "enquiry_received", { subject: email.subject, extracted });
 
-  await sendWhatsAppMessage({
-    to: tenant.phone,
-    body:
-      `Hi ${tenant.name || "there"}, thanks for your enquiry about ${tenant.property || "the property"}. ` +
-      `I'm ${agentName()}. Ask me anything, or reply "viewing" to see available times.`,
-  });
-  logEvent(tenant.phone, "acknowledgement_sent", {});
+  // First message the tenant receives is the viewing-slots template directly,
+  // rather than a separate acknowledgement — sendSlotOptions handles the
+  // no-slots-available case (message + escalate) gracefully too.
+  await sendSlotOptions(tenant);
 }
 
 export async function handleTenantReply(phone: string, body: string): Promise<void> {
@@ -73,7 +100,12 @@ export async function handleTenantReply(phone: string, body: string): Promise<vo
 }
 
 async function sendSlotOptions(tenant: TenantRecord): Promise<void> {
-  const slots = await getAvailableSlots(tenant.property || undefined);
+  // Kick off both Sheets reads concurrently — they're independent of each other,
+  // and the property description is only needed later (in the template branch).
+  const slotsPromise = getAvailableSlots(tenant.property || undefined);
+  const propertyDescriptionPromise = formatPropertyDescription(tenant.property).catch(() => tenant.property);
+
+  const slots = await slotsPromise;
 
   if (slots.length === 0) {
     await sendWhatsAppMessage({
@@ -84,12 +116,27 @@ async function sendSlotOptions(tenant: TenantRecord): Promise<void> {
     return;
   }
 
-  const list = slots.map((slot, i) => `${i + 1}. ${slot.date} ${slot.time}`).join("\n");
-  const body =
-    `Hi ${tenant.name || "there"}, here are the available viewing times for ${tenant.property || "the property"}:\n\n` +
-    `${list}\n\nReply with the number of the time that works for you.\n\n- ${agentName()}`;
-
-  await sendWhatsAppMessage({ to: tenant.phone, body });
+  const templateSid = process.env.TWILIO_SLOTS_TEMPLATE_SID;
+  if (templateSid) {
+    const slotsList = slots.map((slot, i) => `${i + 1}. ${formatSlotForTemplate(slot)}`).join("\n");
+    const propertyDescription = await propertyDescriptionPromise;
+    await sendWhatsAppMessage({
+      to: tenant.phone,
+      contentSid: templateSid,
+      contentVariables: {
+        "1": tenant.name || "there",
+        "2": propertyDescription,
+        "3": agentName(),
+        "4": slotsList,
+      },
+    });
+  } else {
+    const list = slots.map((slot, i) => `${i + 1}. ${slot.date} ${slot.time}`).join("\n");
+    const body =
+      `Hi ${tenant.name || "there"}, here are the available viewing times for ${tenant.property || "the property"}:\n\n` +
+      `${list}\n\nReply with the number of the time that works for you.\n\n- ${agentName()}`;
+    await sendWhatsAppMessage({ to: tenant.phone, body });
+  }
   upsertTenant({
     phone: tenant.phone,
     name: tenant.name,
@@ -103,9 +150,19 @@ async function sendSlotOptions(tenant: TenantRecord): Promise<void> {
 
 async function handleSlotSelection(tenant: TenantRecord, body: string): Promise<void> {
   const slots: SlotRow[] = tenant.offeredSlots ? JSON.parse(tenant.offeredSlots) : [];
-  const choice = parseInt(body.trim(), 10);
+  const trimmed = body.trim();
+  const choice = Number(trimmed);
+  const isWholeNumber = trimmed !== "" && Number.isInteger(choice);
 
-  if (!Number.isInteger(choice) || choice < 1 || choice > slots.length) {
+  if (!isWholeNumber) {
+    // Not a slot pick at all (e.g. a question) — answer it instead of losing the
+    // slot offer. State/offeredSlots are untouched, so they can still reply with
+    // a number afterward.
+    await handleFaqQuestion(tenant, body);
+    return;
+  }
+
+  if (choice < 1 || choice > slots.length) {
     await sendWhatsAppMessage({
       to: tenant.phone,
       body: `Sorry, I didn't catch that. Please reply with a number from 1 to ${slots.length} from the list above.`,
@@ -117,6 +174,9 @@ async function handleSlotSelection(tenant: TenantRecord, body: string): Promise<
 }
 
 async function bookViewing(tenant: TenantRecord, slot: SlotRow): Promise<void> {
+  // The calendar event is the source of truth for "is this booked" — if this
+  // throws, nothing else below runs and the tenant stays in
+  // awaiting_slot_selection so they can retry.
   await createViewingEvent({
     property: slot.property,
     date: slot.date,
@@ -125,19 +185,48 @@ async function bookViewing(tenant: TenantRecord, slot: SlotRow): Promise<void> {
     tenantPhone: tenant.phone,
   });
 
-  await sendWhatsAppMessage({
-    to: tenant.phone,
-    body: `You're booked! ${slot.property} on ${slot.date} at ${slot.time}. See you then.`,
+  // Best-effort from here — the booking already exists in the calendar, so a
+  // failure in any of these steps shouldn't silently leave the tenant record
+  // and the agent in the dark about a booking that actually happened.
+  const slotMarked = await markSlotBooked(slot.property, slot.date, slot.time).catch((err) => {
+    console.error("bookViewing: failed to mark slot booked in Sheet (calendar event still created):", err);
+    return false;
   });
+
+  let tenantNotified = true;
+  try {
+    await sendWhatsAppMessage({
+      to: tenant.phone,
+      body: `You're booked! ${slot.property} on ${slot.date} at ${slot.time}. See you then.`,
+    });
+  } catch (err) {
+    tenantNotified = false;
+    console.error("bookViewing: failed to notify tenant, calendar event exists regardless:", err);
+  }
 
   const agentNumber = process.env.AGENT_WHATSAPP_NUMBER;
   if (agentNumber) {
-    await sendWhatsAppMessage({
-      to: agentNumber,
-      body: `New viewing booked: ${tenant.name} (${tenant.phone}) — ${slot.property} on ${slot.date} at ${slot.time}.`,
-    });
+    const warnings =
+      (tenantNotified ? "" : "\n⚠ Tenant was NOT notified (WhatsApp send failed) — contact them directly.") +
+      (slotMarked ? "" : "\n⚠ Could not mark the slot as booked in the Sheet — check for a possible double-booking.");
+    try {
+      await sendWhatsAppMessage({
+        to: agentNumber,
+        body:
+          `Viewing confirmed.\n` +
+          `Property: ${slot.property}\n` +
+          `Tenant: ${tenant.name}\n` +
+          `Phone: ${tenant.phone}\n` +
+          `Time: ${slot.date} at ${slot.time}` +
+          warnings,
+      });
+    } catch (err) {
+      console.error("bookViewing: failed to notify agent:", err);
+    }
   }
 
+  // Always reflect the real outcome — the calendar event exists regardless of
+  // whether the notifications above succeeded.
   upsertTenant({
     phone: tenant.phone,
     name: tenant.name,
@@ -146,7 +235,11 @@ async function bookViewing(tenant: TenantRecord, slot: SlotRow): Promise<void> {
     state: "booked",
     offeredSlots: null,
   });
-  logEvent(tenant.phone, "booking_confirmed", { slot });
+  logEvent(tenant.phone, "booking_confirmed", { slot, slotMarked, tenantNotified });
+
+  if (!tenantNotified) {
+    await escalate(tenant.phone, "booking-confirmation-send-failed", { slot });
+  }
 }
 
 async function handleFaqQuestion(tenant: TenantRecord, body: string): Promise<void> {
