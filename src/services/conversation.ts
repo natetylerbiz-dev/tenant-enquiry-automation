@@ -275,7 +275,22 @@ async function bookViewing(tenant: TenantRecord, slot: SlotRow): Promise<void> {
 }
 
 async function handleFaqQuestion(tenant: TenantRecord, body: string): Promise<void> {
-  const { answer, confidence } = await answerFaqQuestion(body, tenant.property);
+  const { onTopic, answer, confidence } = await answerFaqQuestion(body, tenant.property);
+
+  // Off-topic messages get a fixed, code-owned redirect rather than whatever
+  // the model produced for "answer" — the model output isn't trusted here
+  // since the tenant's message is what's steering it, and this is exactly the
+  // path a "write me a poem"/"ignore instructions" style message takes.
+  // No escalate() either: this isn't a real leasing question the agent needs
+  // to see, just chatbot misuse to redirect away from.
+  if (!onTopic) {
+    await sendWhatsAppMessage({
+      to: tenant.phone,
+      body: `I can only help with questions about ${tenant.property || "this property"} and the viewing/tenancy process. For anything else, please contact ${agentName()} directly.`,
+    });
+    logEvent(tenant.phone, "faq_off_topic", { question: body });
+    return;
+  }
 
   if (confidence < CONFIDENCE_THRESHOLD) {
     await escalate(tenant.phone, "low-confidence-faq-answer", { question: body, answer, confidence });
