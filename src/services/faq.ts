@@ -88,7 +88,12 @@ export async function answerFaqQuestion(question: string, property: string): Pro
   const tenantInfo = loadTenantInfo();
 
   const response = await getClient().messages.create({
-    model: "claude-opus-4-8",
+    // Haiku over Sonnet here specifically for response speed — this is a short,
+    // narrowly-scoped lookup (answer from provided text, forced tool schema),
+    // not open-ended reasoning, so the accuracy tradeoff is small relative to
+    // the latency win. Extraction (extraction.ts) uses Sonnet since it's a
+    // heavier free-form parse task, not in the same tight latency budget.
+    model: "claude-haiku-4-5",
     max_tokens: 1024,
     system: [
       {
