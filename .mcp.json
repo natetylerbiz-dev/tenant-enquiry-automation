@@ -7,8 +7,8 @@
         "dist/mcp/sheets-server.js"
       ],
       "env": {
-        "GOOGLE_SHEETS_ID": "REPLACE_WITH_YOUR_GOOGLE_SHEET_ID",
-        "GOOGLE_SERVICE_ACCOUNT_KEY_PATH": "C:\\path\\to\\credentials-service-account.json"
+        "GOOGLE_SHEETS_ID": "${GOOGLE_SHEETS_ID}",
+        "GOOGLE_SERVICE_ACCOUNT_KEY_PATH": "${GOOGLE_SERVICE_ACCOUNT_KEY_PATH}"
       }
     }
   }
