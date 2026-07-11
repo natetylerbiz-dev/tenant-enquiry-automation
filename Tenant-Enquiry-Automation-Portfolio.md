@@ -1,7 +1,6 @@
 # Tenant Enquiry Automation — Portfolio Case Study
 
-**Repository:** [github.com/YOUR-USERNAME/tenant-enquiry-automation](https://github.com/YOUR-USERNAME/tenant-enquiry-automation)
-*(placeholder — replace with the actual public repo URL before generating the final PDF)*
+**Repository:** [github.com/natetylerbiz-dev/tenant-enquiry-automation](https://github.com/natetylerbiz-dev/tenant-enquiry-automation)
 
 ## Executive summary
 
