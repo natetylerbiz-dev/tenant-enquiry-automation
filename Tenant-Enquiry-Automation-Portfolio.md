@@ -1,9 +1,29 @@
 # Tenant Enquiry Automation — Portfolio Case Study
 
+**Repository:** [github.com/YOUR-USERNAME/tenant-enquiry-automation](https://github.com/YOUR-USERNAME/tenant-enquiry-automation)
+*(placeholder — replace with the actual public repo URL before generating the final PDF)*
+
+## Executive summary
+
+This is a working, live-tested automation that handles a real estate tenant
+enquiry end to end — email in, WhatsApp conversation, viewing booked on a
+shared calendar, agent notified — built as a rebuild of an earlier n8n
+prototype. I specified, directed, and tested every piece of it using Claude
+Code; I did not write the TypeScript by hand and I'm not claiming to. All 8
+build pieces have been run against real Gmail, WhatsApp (Twilio), and Google
+Calendar accounts, not just wired together and assumed to work — section 4
+below is explicit about what's genuinely live versus still Sandbox/demo-only.
+Section 3 is the part most worth a close read: four real bugs found and
+fixed through live testing, plus three deliberate design/trade-off
+decisions — including two similar-looking "Saturday" changes I was
+initially at risk of conflating myself, verified apart and written up
+separately. Every item cites an actual git commit hash you can look up in
+the repository above, not a reconstructed or embellished story.
+
 > **Note on the data in this repo:** the lease-terms document
-> ([data/tenant-info.md](data/tenant-info.md)) and a company name that was
+> (`data/tenant-info.md`) and a company name that was
 > hardcoded in one place in the source
-> ([src/services/faq.ts](src/services/faq.ts)) originally came from my
+> (`src/services/faq.ts`) originally came from my
 > current employer's real lease templates and real business name. Both have
 > been replaced with clearly fictional placeholder content (same structure
 > and section headings, different agency name and figures) so this repo can
@@ -34,25 +54,25 @@ for real test messages, found cases where the behavior was wrong, and
 directed the fixes — the way a product owner or technical lead works with an
 engineering team, except the "team" here was Claude Code.
 
-The build order and status are tracked in [CLAUDE.md](CLAUDE.md) at the
+The build order and status are tracked in `CLAUDE.md` at the
 project root — all 8 planned pieces are built and have been live-tested
 end to end over real accounts (not just theoretically wired together).
 
 ## 2. Architecture — how it actually works
 
-The flow, as implemented in [src/index.ts](src/index.ts) and the modules it
+The flow, as implemented in `src/index.ts` and the modules it
 wires together:
 
 **1. Inbound email → extraction.** A Gmail poller
-([src/services/gmailPoller.ts](src/services/gmailPoller.ts)) checks for
+(`src/services/gmailPoller.ts`) checks for
 unread mail matching `subject:"Listing Enquiry" OR subject:"Contact Request"`
 every `GMAIL_POLL_INTERVAL_MS` (default 60 seconds — see
-[.env.example](.env.example)). It's a poller, not a webhook, because this
+`.env.example`). It's a poller, not a webhook, because this
 project doesn't run behind a public endpoint — a deliberate, documented
 trade-off, not an oversight.
 
 Each unread email is passed to `extractTenantDetails()`
-([src/services/extraction.ts](src/services/extraction.ts)), which calls the
+(`src/services/extraction.ts`), which calls the
 Anthropic API (currently `claude-sonnet-5`) with a forced tool call
 (`record_tenant_details`) to pull out name, phone, email, the property being
 asked about, a short message summary, and a 0–1 confidence score. The
@@ -65,11 +85,11 @@ extract rather than a guess.
 
 **2. Confidence gate and phone validation.** If confidence comes back below
 `CONFIDENCE_THRESHOLD` (config in
-[src/config.ts](src/config.ts), default `0.7`, overridable via env), or the
+`src/config.ts`, default `0.7`, overridable via env), or the
 property didn't match, or the phone number is missing, or the phone number
 doesn't pass an E.164 shape check, the enquiry is escalated to me directly
 instead of proceeding — see
-[src/services/conversation.ts](src/services/conversation.ts) `handleNewEnquiry()`.
+`src/services/conversation.ts` `handleNewEnquiry()`.
 Every one of those is a distinct, separately-logged escalation reason
 (`low-confidence-extraction`, `unmatched-property-in-extraction`,
 `missing-phone-in-extraction`, `invalid-phone-in-extraction`).
@@ -77,12 +97,12 @@ Every one of those is a distinct, separately-logged escalation reason
 **3. WhatsApp send.** Phone numbers extracted from real emails come out in
 local format (e.g. `"082 123 4567"`), and Twilio's WhatsApp API requires
 E.164 (`+27...`). `normalizePhoneNumber()`
-([src/services/phone.ts](src/services/phone.ts)) converts before the number
+(`src/services/phone.ts`) converts before the number
 ever becomes a database key or send target, defaulting to the `+27` South
 African country code to match this business's actual market. The tenant is
 sent the available viewing slots for their property, pulled live from a
 Google Sheet via `getAvailableSlots()`
-([src/services/sheets.ts](src/services/sheets.ts)) — either through an
+(`src/services/sheets.ts`) — either through an
 approved Twilio Content Template (`TWILIO_SLOTS_TEMPLATE_SID`) with a
 friendly, human-readable slot list, or a plain-text fallback if no template
 is configured.
@@ -90,29 +110,29 @@ is configured.
 **4. Tenant replies, FAQ answering, and slot booking.** Because there's also
 no public endpoint for Twilio to push inbound WhatsApp messages to, replies
 are polled from Twilio's Messages API
-([src/services/twilioPoller.ts](src/services/twilioPoller.ts), default every
+(`src/services/twilioPoller.ts`, default every
 3 seconds — `TWILIO_POLL_INTERVAL_MS`). Conversation state per tenant
 (`new` / `awaiting_slot_selection` / `booked` / `escalated`) lives in a local
 SQLite database (`node:sqlite`, built into Node — chosen specifically to
 avoid a native-module build step on Windows; see
-[src/state/db.ts](src/state/db.ts)), and every event is logged to an
-`events` table via [src/services/logger.ts](src/services/logger.ts).
+`src/state/db.ts`), and every event is logged to an
+`events` table via `src/services/logger.ts`.
 
 Depending on state and message content, a reply routes to:
 - **Slot selection** — the tenant can reply with a list number, or with a
   day name ("Saturday works") matched against the actual offered slots
   (`findSlotsMentioned()` in conversation.ts).
 - **FAQ answering** — `answerFaqQuestion()`
-  ([src/services/faq.ts](src/services/faq.ts)) calls `claude-haiku-4-5`
+  (`src/services/faq.ts`) calls `claude-haiku-4-5`
   with a forced tool call, grounded in two data sources: a static
   cross-property policy document
-  ([data/tenant-info.md](data/tenant-info.md) — see the note at the top of
+  (`data/tenant-info.md` — see the note at the top of
   this document regarding its content) and live per-property facts (rent, deposit,
   bedrooms, pet policy, etc.) read from a "Properties" tab in the same
   Google Sheet via `getPropertyDetails()`. The model returns `onTopic`,
   `answer`, and `confidence` — explained further in section 3.
 - **Booking** — a confirmed slot calls `createViewingEvent()`
-  ([src/services/calendar.ts](src/services/calendar.ts)) to write a Google
+  (`src/services/calendar.ts`) to write a Google
   Calendar event, which is treated as the single source of truth for "is
   this booked." Only if that succeeds does the system mark the Sheet slot
   as `Booked` (`markSlotBooked()`, to prevent a second tenant double-booking
@@ -121,14 +141,14 @@ Depending on state and message content, a reply routes to:
   (e.g. a WhatsApp send failing) can't silently leave the booking
   half-recorded.
 
-**5. MCP server.** [src/mcp/sheets-server.ts](src/mcp/sheets-server.ts) is a
+**5. MCP server.** `src/mcp/sheets-server.ts` is a
 small MCP server exposing `get_available_slots` as a tool, callable from
 inside a Claude Code / MCP client session — separate from, but backed by the
 same `sheets.ts` module as, the runtime pollers. This piece specifically was
 built to get hands-on directing the build of an MCP server, not just
 using one someone else built.
 
-**6. Skill.** [.claude/skills/extract-tenant-enquiry/SKILL.md](.claude/skills/extract-tenant-enquiry/SKILL.md)
+**6. Skill.** `.claude/skills/extract-tenant-enquiry/SKILL.md`
 is an Agent Skill that lets me paste a raw enquiry email into a Claude Code
 conversation and get the same structured extraction the live system
 performs automatically, for manual/ad hoc use — it explicitly documents that
@@ -138,7 +158,7 @@ it mirrors the schema used by the real `extractTenantDetails()` function.
 case — from either extraction or FAQ answering, plus phone validation
 failures, undeliverable WhatsApp sends, and unknown senders — routes through
 one function, `escalate()`
-([src/services/escalation.ts](src/services/escalation.ts)), which logs the
+(`src/services/escalation.ts`), which logs the
 event and messages me on WhatsApp with the tenant's number, the reason code,
 and context. This was a deliberate architectural rule (documented in
 CLAUDE.md), not something I noticed missing after the fact — the intent was
@@ -205,7 +225,7 @@ passed a message's timestamp, that message was permanently excluded from
 every future poll even though it existed the whole time. That
 characterization — "a real, observed message loss, not a hypothetical" —
 is a direct quote, but it's from the code comment in
-[src/services/twilioPoller.ts](src/services/twilioPoller.ts) explaining the
+`src/services/twilioPoller.ts` explaining the
 fix, not from the `b817301` commit message itself; the commit message
 describes the same root cause but in different words ("Twilio's Messages
 List API has enough indexing lag that an advancing watermark can
@@ -227,7 +247,7 @@ answering, which had no idea what slots had been offered, producing an
 unhelpful "send me your preferred time" reply even when that exact day's
 slot was already on the list sent minutes earlier. The fix added a
 weekday-matching check (`findSlotsMentioned()`, now in
-[src/services/conversation.ts](src/services/conversation.ts)) ahead of the
+`src/services/conversation.ts`) ahead of the
 FAQ fallback.
 
 What makes this one worth calling out separately is where the fix
