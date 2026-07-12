@@ -5,11 +5,7 @@
       "command": "node",
       "args": [
         "dist/mcp/sheets-server.js"
-      ],
-      "env": {
-        "GOOGLE_SHEETS_ID": "${GOOGLE_SHEETS_ID}",
-        "GOOGLE_SERVICE_ACCOUNT_KEY_PATH": "${GOOGLE_SERVICE_ACCOUNT_KEY_PATH}"
-      }
+      ]
     }
   }
 }
