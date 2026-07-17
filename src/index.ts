@@ -1,10 +1,13 @@
 import dotenv from "dotenv";
 import { getDb } from "./state/db.js";
+import { acquireInstanceLock } from "./services/instanceLock.js";
 import { startGmailPolling } from "./services/gmailPoller.js";
 import { startTwilioPolling } from "./services/twilioPoller.js";
 import { handleNewEnquiry, handleTenantReply } from "./services/conversation.js";
 
 dotenv.config({ quiet: true });
+
+acquireInstanceLock();
 
 // Both pollers already catch and log errors per-message, so anything reaching
 // here slipped past every safety net. Log it clearly rather than dying with no
