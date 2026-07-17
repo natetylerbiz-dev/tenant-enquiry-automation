@@ -72,6 +72,15 @@ notification). Remaining gaps are content, not code; see Setup status below.
 - `src/index.ts` has top-level `unhandledRejection`/`uncaughtException` handlers
   as a last-resort safety net; both pollers already catch and log per-message,
   so anything reaching these slipped past every other guard.
+- `handleTenantReply()` (`src/services/conversation.ts`) rate-limits inbound
+  WhatsApp messages per tenant phone number (`checkRateLimit()` in
+  `src/services/rateLimit.ts`, in-memory sliding window, default 8
+  messages/60s, env-overridable via `RATE_LIMIT_MAX_MESSAGES` /
+  `RATE_LIMIT_WINDOW_MS` in `src/config.ts`) before any DB lookup or LLM call,
+  since a tenant sending messages faster than they're processed would
+  otherwise drive unbounded `answerFaqQuestion()` calls. Only the first
+  message past the threshold gets a reply, so the throttle notice itself
+  can't become another spam vector.
 - Real enquiry emails describe properties in their own marketing wording (web
   refs, full listing titles), not this project's internal property names.
   `extractTenantDetails()` is given the live list of known property names

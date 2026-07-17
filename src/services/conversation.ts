@@ -10,6 +10,7 @@ import { createViewingEvent } from "./calendar.js";
 import { CONFIDENCE_THRESHOLD } from "../config.js";
 import type { TenantEnquiryEmail } from "./gmail.js";
 import { normalizePhoneNumber, isValidPhoneNumber } from "./phone.js";
+import { checkRateLimit } from "./rateLimit.js";
 
 dotenv.config({ quiet: true });
 
@@ -110,6 +111,27 @@ export async function handleNewEnquiry(email: TenantEnquiryEmail): Promise<void>
 
 export async function handleTenantReply(phone: string, body: string): Promise<void> {
   logEvent(phone, "tenant_message", { body });
+
+  // Gate before any DB lookup or LLM call — a tenant (or spoofed number)
+  // sending messages faster than we can process would otherwise drive
+  // unbounded answerFaqQuestion() calls, each an Anthropic API call. Only the
+  // first message past the threshold gets a reply, so throttling itself
+  // can't be turned into another spam vector.
+  const { limited, shouldNotify } = checkRateLimit(phone);
+  if (limited) {
+    logEvent(phone, "rate_limited", { body });
+    if (shouldNotify) {
+      try {
+        await sendWhatsAppMessage({
+          to: phone,
+          body: "You're sending messages faster than I can keep up — please wait a moment before sending more.",
+        });
+      } catch (err) {
+        console.error("handleTenantReply: failed to send rate-limit notice:", err);
+      }
+    }
+    return;
+  }
 
   const tenant = getTenant(phone);
   if (!tenant) {
