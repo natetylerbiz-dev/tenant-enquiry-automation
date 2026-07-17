@@ -13,7 +13,7 @@ build pieces have been run against real Gmail, WhatsApp (Twilio), and Google
 Calendar accounts, not just wired together and assumed to work; section 4
 below is explicit about what's genuinely live versus still Sandbox/demo-only.
 Section 3 is the part most worth a close read: four real bugs found and
-fixed through live testing, plus three deliberate design/trade-off
+fixed through live testing, plus four deliberate design/trade-off
 decisions, including two similar-looking "Saturday" changes I was
 initially at risk of conflating myself, verified apart and written up
 separately. Every item cites an actual git commit hash you can look up in
@@ -332,6 +332,27 @@ reflects a real judgment call about matching model capability to task
 difficulty and latency requirements, something I specified based on
 understanding what each step actually requires, not a default I left
 untouched.
+
+**h) A proactive gap closed before it caused an incident, not a bug found
+through live testing.**
+Commit `1e18ae4` ("Rate-limit inbound WhatsApp messages per tenant")
+addressed a different kind of gap than (a)-(c) above: nothing in the running
+system stopped a tenant (or anyone spoofing/spamming a tenant's number) from
+sending WhatsApp messages faster than the system could process them, and
+every non-slot-selection reply routes through `answerFaqQuestion()`, an
+Anthropic API call. Unlike (a)-(c), this wasn't found by observing a real
+message flood; I identified it as a standing gap and had it closed
+pre-emptively, the same "spec ahead of the failure occurring" judgment as
+item (e)'s date/month fix. The fix (`checkRateLimit()` in
+`src/services/rateLimit.ts`) adds a per-phone, in-memory sliding-window
+limiter (default 8 messages/60s, env-overridable via
+`RATE_LIMIT_MAX_MESSAGES` / `RATE_LIMIT_WINDOW_MS`) that gates
+`handleTenantReply()` before any database lookup or LLM call; only the first
+message past the threshold gets a reply, so the throttle notice itself can't
+become another spam vector. This sits alongside item (g)'s model-routing
+decision as the second cost-control judgment call in this project: (g)
+picks the cheapest adequate model per task, this bounds how many times that
+model gets called per tenant in the first place.
 
 ## 4. Current status: what's real, what's a demo limitation
 
