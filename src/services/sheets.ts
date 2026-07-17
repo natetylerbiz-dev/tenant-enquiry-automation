@@ -60,6 +60,15 @@ async function getSheetsWriteClient() {
   return google.sheets({ version: "v4", auth });
 }
 
+// The Sheet isn't pruned automatically, so a stale row (Status still
+// "Available" from a slot whose date has already passed) would otherwise get
+// offered to a tenant as if it were bookable. Same date+time parsing as
+// conversation.ts's slotWeekday/formatSlotForTemplate.
+function isFutureSlot(row: SlotRow): boolean {
+  const dt = new Date(`${row.date} ${row.time}`);
+  return !Number.isNaN(dt.getTime()) && dt.getTime() > Date.now();
+}
+
 export async function getAvailableSlots(property?: string): Promise<SlotRow[]> {
   const sheetId = process.env.GOOGLE_SHEETS_ID;
   if (!sheetId) {
@@ -83,7 +92,8 @@ export async function getAvailableSlots(property?: string): Promise<SlotRow[]> {
       agent: row[4] ?? "",
     }))
     .filter((row) => row.status === "Available")
-    .filter((row) => !property || row.property === property);
+    .filter((row) => !property || row.property === property)
+    .filter(isFutureSlot);
 }
 
 export async function listKnownProperties(): Promise<string[]> {
